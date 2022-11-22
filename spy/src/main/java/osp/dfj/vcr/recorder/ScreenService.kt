@@ -12,19 +12,13 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import osp.dfj.spy.R
-import osp.dfj.vcr.IOScope
-import osp.dfj.vcr.Spy
-import osp.dfj.vcr.SpyConfig
+import osp.dfj.vcr.*
+import osp.dfj.vcr._broadcaster
 import osp.dfj.vcr.log
-import java.io.File
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.EmptyCoroutineContext
 
 /**
  * @author yun.
@@ -55,11 +49,9 @@ class DeFrontServiceNotify : FrontServiceNotify {
                 it
             }
             notificationManager.createNotificationChannel(channel)
-            val icon =
-                androidx.constraintlayout.widget.R.drawable.abc_ic_go_search_api_material
+            val icon = service.packageManager.getApplicationIcon(service.packageName).toBitmap()
             val notificationBuilder: NotificationCompat.Builder = NotificationCompat.Builder(service, notificationChannelId)
-                .setLargeIcon(BitmapFactory.decodeResource(service.resources, icon))
-                .setSmallIcon(icon)
+                .setLargeIcon(icon)
                 .setContentTitle("Spy Service")
                 .setContentText("monitoring screen")
             return 110 to notificationBuilder.build()
@@ -93,7 +85,7 @@ abstract class FrontService : Service() {
 sealed class CaptureState(val desc: String) {
     object Start : CaptureState("start")
     object Stop : CaptureState("stop")
-    data class Succeed(val path: String) : CaptureState("finish")
+    data class Finish(val uri: Uri?) : CaptureState("finish")
 }
 
 internal class ScreenService : FrontService(), Spy, CoroutineScope by IOScope {
@@ -115,9 +107,6 @@ internal class ScreenService : FrontService(), Spy, CoroutineScope by IOScope {
         }
     }
 
-    private val broadcaster by lazy {
-        LocalBroadcastManager.getInstance(this)
-    }
     private var codecRecoder: CodecRecorder? = null
     private var spyConfig: SpyConfig? = null
     private var state: String = "idle"
@@ -131,6 +120,7 @@ internal class ScreenService : FrontService(), Spy, CoroutineScope by IOScope {
         }
         when (cmd) {
             CaptureState.Start.desc -> {
+                _broadcaster.postValue(CaptureState.Start)
                 spyConfig = intent.getParcelableExtra<SpyConfig>("spy_config")!!
                 tobeFrontService()
                 val data = intent.getParcelableExtra<Intent>("intent")!!
@@ -147,12 +137,10 @@ internal class ScreenService : FrontService(), Spy, CoroutineScope by IOScope {
                             )
                             mediaScanIntent.putExtra("spy", "spy")
                             mediaScanIntent.data = this
-                            val broadcast = broadcaster.sendBroadcast(mediaScanIntent)
                             sendBroadcast(mediaScanIntent)
-                            " $state save filed $this broadcast:$broadcast ".log()
-                        } ?: broadcaster.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply { putExtra("spy", "spy") })
-                    } else {
-                        broadcaster.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE).apply { putExtra("spy", "spy") })
+                            _broadcaster.postValue(CaptureState.Finish(this))
+                            " $state save filed $this broadcast ".log()
+                        } ?: _broadcaster.postValue(CaptureState.Finish(null))
                     }
                     state = cmd
                     " $state stop self ".log()
@@ -179,6 +167,6 @@ internal class ScreenService : FrontService(), Spy, CoroutineScope by IOScope {
     }
 
     override fun notify(): Pair<Int, Notification>? {
-        return spyConfig?.notifyClass?.newInstance()?.notify(this)?:DeFrontServiceNotify().notify(this)
+        return spyConfig?.notifyClass?.newInstance()?.notify(this) ?: DeFrontServiceNotify().notify(this)
     }
 }

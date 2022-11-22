@@ -1,17 +1,18 @@
 package osp.dfj.vcr
 
+import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.os.Parcelable
-import android.util.Log
+import android.provider.MediaStore
 import androidx.annotation.RestrictTo
 import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
-import osp.dfj.vcr.recorder.DeFrontServiceNotify
-import osp.dfj.vcr.recorder.DefMxiRunning
-import osp.dfj.vcr.recorder.FrontServiceNotify
-import osp.dfj.vcr.recorder.MixRunnig
+import osp.dfj.vcr.recorder.*
 import java.io.File
+import java.nio.file.Files
 
 /**
  * @author yun.
@@ -33,7 +34,7 @@ data class SpyConfigBuilder(
     private val videoConfig: VideoConfig = VideoConfig(),
     private val storageConfig: StorageConfig = StorageConfig(),
     var notifyClass: Class<out FrontServiceNotify> = DeFrontServiceNotify::class.java,
-    var mixRunningClass: Class<out MixRunnig> = DefMxiRunning::class.java
+    var mixRunningClass: Class<out MixRunnig> = LogMixRunning::class.java
 ) {
     @JvmSynthetic
     fun video(config: VideoConfig.() -> Unit) = videoConfig.config()
@@ -55,13 +56,35 @@ data class VideoConfig @JvmOverloads constructor(
  */
 @Parcelize
 data class StorageConfig @JvmOverloads constructor(
-    val fileName: String = "spy",
-    val directory: File = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
+    val fileName: String = "spy.mp4",
+    val directory: File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Spy"),
 ) : Parcelable {
 
-    @IgnoredOnParcel
-    internal val mediaStorageLocation: File = File(directory, fileName).touch(true)
+    fun saveFile(context: Context, url: String): Uri? {
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            put(MediaStore.MediaColumns.DATE_ADDED, System.currentTimeMillis())
+            put(MediaStore.MediaColumns.DATE_ADDED, System.currentTimeMillis())
+            put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Spy")
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
 
+        // Add to the mediastore
+//        val os = resolver.openOutputStream(uri!!, "w")
+//
+//
+//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+//            Files.copy(File(url).toPath(), os)
+//        }
+        File(url).toURL().openStream().use { input ->
+            resolver.openOutputStream(uri!!).use { output ->
+                input.copyTo(output!!, DEFAULT_BUFFER_SIZE)
+            }
+        }
+        return uri
+    }
 }
 
 internal fun File.touch(refresh: Boolean = false): File {

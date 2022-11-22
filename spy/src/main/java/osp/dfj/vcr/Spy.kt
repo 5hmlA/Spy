@@ -1,24 +1,30 @@
 package osp.dfj.vcr
 
 import android.Manifest
-import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.os.StrictMode
+import android.os.StrictMode.VmPolicy
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.lifecycle.MutableLiveData
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import osp.dfj.vcr.recorder.CaptureState
 import osp.dfj.vcr.recorder.ScreenService
 import kotlin.coroutines.*
+
 
 /**
  * @author yun.
@@ -59,22 +65,10 @@ internal class Diplomat(private val activity: ComponentActivity, private val con
     private val permissionRequest: ActivityResultLauncher<Array<String>>
     private val screenCaptureRequest: ActivityResultLauncher<Unit>
     private var stopHandler: Continuation<Uri?>? = null
-    private val broadcaster by lazy {
-        LocalBroadcastManager.getInstance(activity)
-    }
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.getStringExtra("spy") != null) {
-                " BroadcastReceiver $this  path:${intent.data} ".log()
-                stopHandler?.resume(intent.data)
-                stopHandler = null
-                broadcaster.unregisterReceiver(this)
-            }
-        }
-    }
 
     init {
         permissionRequest = activity.registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            " permissionRequest $it".log()
             permissionCheckThenCaptureRequest(activity)
         }
         screenCaptureRequest = activity.registerForActivityResult(ScreenCaptureContract(activity)) {
@@ -82,12 +76,33 @@ internal class Diplomat(private val activity: ComponentActivity, private val con
                 allowedCapture(activity, it)
             }
         }
+        _broadcaster.value = null
+        _broadcaster.observe(activity) {
+            if (it is CaptureState.Finish) {
+                " BroadcastReceiver $this  path:${it.uri} ".log()
+                stopHandler?.resume(it.uri)
+                stopHandler = null
+            }
+        }
+
+        val builder = VmPolicy.Builder()
+        StrictMode.setVmPolicy(builder.build())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            builder.detectFileUriExposure()
+        }
     }
 
     private fun permissionCheckThenCaptureRequest(activity: ComponentActivity) {
-        val checkPermission = (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
-                + ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE)
-                + ContextCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE))
+        val checkPermission = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
+                    + ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE)) + ContextCompat.checkSelfPermission(
+                activity,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        } else {
+            (ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO)
+                    + ContextCompat.checkSelfPermission(activity, Manifest.permission.READ_PHONE_STATE))
+        }
         if (checkPermission != PackageManager.PERMISSION_GRANTED) {
             permissionRequest.launch(
                 arrayOf(
@@ -103,11 +118,19 @@ internal class Diplomat(private val activity: ComponentActivity, private val con
     }
 
     private fun allowedCapture(activity: ComponentActivity, data: Intent) {
-        broadcaster.registerReceiver(receiver, IntentFilter(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE))
         ScreenService.record(activity, data, config)
     }
 
     override fun record() {
+
+//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+//            https://developer.android.google.cn/training/data-storage/manage-all-files
+//            " >> check ExternalStorage >> ${Environment.isExternalStorageManager()}".log()
+//            if (!Environment.isExternalStorageManager()) {
+//                activity.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+//                return
+//            }
+//        }
         //权限检查
         permissionCheckThenCaptureRequest(activity)
     }
@@ -119,6 +142,9 @@ internal class Diplomat(private val activity: ComponentActivity, private val con
     }
 
     override suspend fun stop(keep: Boolean) = suspendCoroutine {
+        if (_broadcaster.value == null) {
+            throw RuntimeException("stop must be after record")
+        }
         if (stopHandler != null) {
             throw RuntimeException("stop only once after record")
         }
@@ -129,11 +155,10 @@ internal class Diplomat(private val activity: ComponentActivity, private val con
 
 
 object IOScope : CoroutineScope {
-    /**
-     * Returns [EmptyCoroutineContext].
-     */
+
     override val coroutineContext: CoroutineContext
         get() = Dispatchers.IO
+
 }
 
 internal fun String.log() {
@@ -144,8 +169,23 @@ fun Uri?.open(context: Context) {
     if (this == null) {
         return
     }
+
+//    val intent = Intent()
+//    val comp: ComponentName = ComponentName(
+//        "com.tencent.mm",
+//        "com.tencent.mm.ui.tools.ShareToTimeLineUI"
+//    )
+//    intent.setComponent(comp)
+//    intent.setAction("android.intent.action.SEND")
+//    intent.setType("image/*")
+//    intent.putExtra(Intent.EXTRA_TEXT, "我是文字")
+//    intent.putExtra(Intent.EXTRA_STREAM, this)
+//    context.startActivity(intent)
     Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(this@open, "video/*")
         context.startActivity(this)
     }
 }
+
+internal val _broadcaster = MutableLiveData<CaptureState?>()
+//val broadcaster: LiveData<CaptureState?> = _broadcaster

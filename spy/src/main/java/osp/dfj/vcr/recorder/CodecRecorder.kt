@@ -35,13 +35,11 @@ import kotlin.coroutines.suspendCoroutine
  * @since [https://github.com/ZuYun]
  * <p><a href="https://github.com/ZuYun">github</a>
  */
-internal class CodecRecorder(val context: Context, val data: Intent, val config: SpyConfig) : Spy {
+internal class CodecRecorder(private val context: Context, private val data: Intent, private val config: SpyConfig) : Spy {
 
     private val mediaProjectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
     private val MIME_TYPE = "video/avc" // H.264 Advanced Video Coding
-    private val FRAME_RATE = 60 // 30 fps
-    private val IFRAME_INTERVAL = 10 // 10 seconds between I-frames
     private val TIMEOUT_USEC = 10000L
 
     private lateinit var mediaProjection: MediaProjection
@@ -69,8 +67,8 @@ internal class CodecRecorder(val context: Context, val data: Intent, val config:
         }
 //        val currentWindowMetrics = windowManager.currentWindowMetrics
 //        "--> ${currentWindowMetrics.bounds} > $displayMetrics".log()
-        val proportion =
-            if (context.resources.configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK == Configuration.SCREENLAYOUT_SIZE_LARGE) 2 else 1
+        val isbigSize = context.resources.configuration.screenLayout and Configuration.SCREENLAYOUT_SIZE_MASK == Configuration.SCREENLAYOUT_SIZE_LARGE
+        val proportion = if (isbigSize) 2 else 1
         val width = 720 * proportion
         //宽高比 必须是16
         val height = (displayMetrics.heightPixels * 1F / displayMetrics.widthPixels * width).toInt() / 16 * 16 * proportion
@@ -230,36 +228,66 @@ internal class CodecRecorder(val context: Context, val data: Intent, val config:
     private fun endOfEncode() {
         mixRunnig.endOfEncode()
         if (keepFile) {
-            val mediaStorageLocation = config.storageConfig.mediaStorageLocation
-            val renameTo = File(tempFilePath).renameTo(mediaStorageLocation)
-            stopHandler?.resume(tempFilePath.toUri())
-            " $this > endOfEncode >>> $keepFile  renameTo $renameTo".log()
+            val uri = config.storageConfig.saveFile(context, tempFilePath)
+            stopHandler?.resume(uri)
+            " $this > endOfEncode >>> $keepFile uri:$uri".log()
         } else {
             stopHandler?.resume(null)
             " $this > endOfEncode >>> $keepFile".log()
         }
     }
 }
-
+//com.android.systemui.screenrecord.ScreenMediaRecorder
+//com.android.systemui.screenrecord.ScreenRecordingMuxer
 interface MixRunnig {
-    fun readyForEncoderBuffers(context: Context,muxer: MediaMuxer)
+    fun readyForEncoderBuffers(context: Context, muxer: MediaMuxer)
     fun updatePresentationTimeUs(muxer: MediaMuxer, presentationTimeUs: Long)
     fun endOfEncode()
 }
 
-class DefMxiRunning : MixRunnig {
-    val audioExtractor = MediaExtractor()
+class LogMixRunning : MixRunnig {
+    override fun readyForEncoderBuffers(context: Context, muxer: MediaMuxer) {
+        (" >> readyForEncoderBuffers $muxer").log()
+    }
+
+    override fun updatePresentationTimeUs(muxer: MediaMuxer, presentationTimeUs: Long) {
+        (" >> updatePresentationTimeUs $muxer > $presentationTimeUs").log()
+    }
+
+    override fun endOfEncode() {
+        (" >> endOfEncode").log()
+    }
+}
+
+//同时录制音频
+class RecordAutioMixRunning : MixRunnig {
+    override fun readyForEncoderBuffers(context: Context, muxer: MediaMuxer) {
+        (" >> readyForEncoderBuffers $muxer").log()
+    }
+
+    override fun updatePresentationTimeUs(muxer: MediaMuxer, presentationTimeUs: Long) {
+        (" >> updatePresentationTimeUs $muxer > $presentationTimeUs").log()
+    }
+
+    override fun endOfEncode() {
+        (" >> endOfEncode").log()
+    }
+}
+
+class MusicMixRunning : MixRunnig {
+    private val audioExtractor = MediaExtractor()
 
     var videoTimeUs = 0L
     var videoUsStart = 0L
     var writeAudioIndex = 0
     var audioDuration = 0L
-    var muxer: MediaMuxer?=null
+    var muxer: MediaMuxer? = null
 
-    override fun readyForEncoderBuffers(context: Context,muxer: MediaMuxer) {
+    override fun readyForEncoderBuffers(context: Context, muxer: MediaMuxer) {
         (" >> readyForEncoderBuffers $muxer").log()
+        val musicRes = 0//todo
         this.muxer = muxer
-        context.resources.openRawResourceFd(0).use {
+        context.resources.openRawResourceFd(musicRes).use {
             audioExtractor.setDataSource(it.fileDescriptor, it.startOffset, it.length)
 
             fun findAudioTrack(): Int {
@@ -275,8 +303,7 @@ class DefMxiRunning : MixRunnig {
             val audioTrack = findAudioTrack()
             audioExtractor.selectTrack(audioTrack)
             val audioFormat = audioExtractor.getTrackFormat(audioTrack)
-            //减去最后4秒没声音的长度
-            audioDuration = audioFormat.getLong(MediaFormat.KEY_DURATION) - TimeUnit.SECONDS.toMicros(4)
+            audioDuration = audioFormat.getLong(MediaFormat.KEY_DURATION) - TimeUnit.SECONDS.toMicros(2)
             writeAudioIndex = muxer.addTrack(audioFormat)
         }
     }
@@ -292,25 +319,26 @@ class DefMxiRunning : MixRunnig {
     @SuppressLint("WrongConstant")
     override fun endOfEncode() {
         (" >> endOfEncode").log()
-        val length = videoTimeUs - videoUsStart
-        "xxx video duration > ${TimeUnit.MICROSECONDS.toSeconds(length)}".log()
+        val videoDuration = videoTimeUs - videoUsStart
+        " >> video duration > ${TimeUnit.MICROSECONDS.toSeconds(videoDuration)}".log()
         muxer?.run {
             val audioBuffer = ByteBuffer.allocate(2 * 1024 * 1024)
             val audioBufferInfo = MediaCodec.BufferInfo()
             val sampleFlags = audioExtractor.sampleFlags
-            val diff = (audioDuration - length).coerceAtLeast(0)
+            val diff = (audioDuration - videoDuration).coerceAtLeast(0)
             if (diff > 0) {
                 audioExtractor.seekTo(diff, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             }
             while (true) {
                 val readSampleDataSize = audioExtractor.readSampleData(audioBuffer, 0)
                 if (readSampleDataSize <= 0) {
+                    //音频读取完了 从头开始
                     audioExtractor.seekTo(0L, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                     continue
                 }
                 audioBufferInfo.flags = sampleFlags
                 audioBufferInfo.offset = 0
-                audioBufferInfo.size = readSampleDataSize
+                audioBufferInfo.size = readSampleDataSize                      //sampleTime 这段时长
                 audioBufferInfo.presentationTimeUs = videoUsStart + audioExtractor.sampleTime - diff
                 writeSampleData(writeAudioIndex, audioBuffer, audioBufferInfo)
                 if (audioBufferInfo.presentationTimeUs >= videoTimeUs) {
