@@ -19,3 +19,8 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+#自定义混淆字典配置
+#-obfuscationdictionary proguard-tradition.txt
+#-packageobfuscationdictionary proguard-tradition.txt
+#-classobfuscationdictionary proguard-tradition.txt

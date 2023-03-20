@@ -4,6 +4,12 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+rootProject.ext.GROUP_ID = "osp.sparkj.ui"
+rootProject.ext.ARTIFACT_ID = "cubic"
+rootProject.ext.VERSION = "2023.03.18"
+
+apply from: "https://raw.githubusercontent.com/5hmlA/animations/master/publish-plugin.gradle"
+
 android {
     namespace 'osp.dfj.spy'
     compileSdk 33
